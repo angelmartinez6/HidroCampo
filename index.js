@@ -4,6 +4,9 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// --- 1. IMPORTAR IA DE GOOGLE ---
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -14,31 +17,34 @@ mongoose.connect(process.env.MONGO_URI)
   .catch(err => console.error("❌ Error Mongo:", err));
 
 // --- MODELOS ---
-// Para los datos que vienen de los sensores
 const MedicionSchema = new mongoose.Schema({
   cultivo: String,
   etapa: String,
   ph: Number,
   caudal: Number,
   temperatura: Number,
-  alerta: String, // Para guardar si hubo un problema
+  alerta: String,
   fecha: { type: Date, default: Date.now }
 });
 const Medicion = mongoose.model('Medicion', MedicionSchema);
 
-// Para guardar la configuración activa elegida en la App
 const CultivoConfigSchema = new mongoose.Schema({
   nombre: String,
   etapa: String,
   horario: String,
-  tiempoRiego: Number,
+  tiempoRiego: String,   
+  sistemaRiego: String,  
+  tamanoTerreno: Number,
   fecha: { type: Date, default: Date.now }
 });
 const CultivoConfig = mongoose.model('CultivoConfig', CultivoConfigSchema);
 
+// --- INICIALIZAR LA IA ---
+// Asegúrate de tener GEMINI_API_KEY en tu archivo .env
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
 // --- RUTAS API ---
 
-// Obtener historial para gráficas en la App
 app.get('/api/historial', async (req, res) => {
   try {
     const historial = await Medicion.find().sort({ fecha: -1 }).limit(20);
@@ -48,7 +54,6 @@ app.get('/api/historial', async (req, res) => {
   }
 });
 
-// Recibir configuración de la App "HidroCampo"
 app.post('/api/cultivo', async (req, res) => {
   try {
     const nuevoCultivo = new CultivoConfig(req.body);
@@ -57,6 +62,51 @@ app.post('/api/cultivo', async (req, res) => {
     res.status(201).json({ message: "Configuración actualizada en el servidor" });
   } catch (err) {
     res.status(500).json({ error: "Error al guardar configuración" });
+  }
+});
+
+// --- RUTA NUEVA: ASISTENTE IA ---
+app.post('/api/asistente', async (req, res) => {
+  try {
+    const { pregunta, cultivo } = req.body;
+
+    // Buscamos las últimas 5 mediciones EXACTAS de ese cultivo usando tu modelo Medicion
+    const historialReciente = await Medicion.find({ cultivo: cultivo })
+                                            .sort({ fecha: -1 })
+                                            .limit(5);
+
+    // Preparamos los datos para que la IA los lea
+    let datosTexto = "No hay datos recientes.";
+    if (historialReciente.length > 0) {
+      datosTexto = historialReciente.map(m => 
+        `pH: ${m.ph}, Temp: ${m.temperatura}°C, Caudal: ${m.caudal}L/min`
+      ).join(" | ");
+    }
+
+    // Le damos personalidad y contexto al modelo
+    const promptExperto = `
+      Eres un ingeniero agrónomo experto ayudando a un productor. 
+      El cultivo actual que se está monitoreando es: ${cultivo}. 
+      Los últimos datos reales de los sensores IoT son: ${datosTexto}.
+      
+      El productor te pregunta: "${pregunta}".
+      
+      Reglas de tu respuesta:
+      - Sé directo, profesional y muy conciso (máximo 3 líneas).
+      - Basa tu consejo estrictamente en los datos de los sensores proporcionados.
+      - No uses formatos complejos como negritas o listas largas.
+    `;
+
+    // Llamamos a Gemini
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const result = await model.generateContent(promptExperto);
+    
+    // Devolvemos el texto a la aplicación móvil
+    res.status(200).json({ respuesta: result.response.text() });
+
+  } catch (error) {
+    console.error("❌ Error con la IA:", error);
+    res.status(500).json({ error: "El asistente está descansando, intenta en un momento." });
   }
 });
 
@@ -79,15 +129,12 @@ client.on('message', async (topic, message) => {
   try {
     const data = JSON.parse(message.toString());
     
-    // 🧠 AQUÍ IRÁ LA LÓGICA DE VALIDACIÓN (Tu tabla de tesis)
-    // Buscamos la configuración de cultivo más reciente
     const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
     
     if (configActiva) {
       data.cultivo = configActiva.nombre;
       data.etapa = configActiva.etapa;
       
-      // Ejemplo de validación para Tomate (pH 6.0 - 7.5)
       if (data.cultivo === 'Tomate' && (data.ph < 6.0 || data.ph > 7.5)) {
         data.alerta = "pH fuera de rango óptimo";
       }
