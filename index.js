@@ -78,14 +78,24 @@ app.post('/api/cultivo', async (req, res) => {
   }
 });
 
-// Chat Inteligente (Asistente Agrónomo)
+// Chat Inteligente (Asistente Agrónomo Híbrido)
 app.post('/api/asistente', async (req, res) => {
   try {
-    const { pregunta, cultivo } = req.body;
+    const { pregunta } = req.body;
 
-    const historialReciente = await Medicion.find({ cultivo: cultivo })
+    // 1. Obtener la configuración activa para saber las manzanas y sistema de riego
+    const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
+
+    if (!configActiva) {
+        return res.status(200).json({ 
+          respuesta: "Por favor, configura el cultivo, el tamaño del terreno y el sistema de riego en la pantalla principal para darte consejos exactos." 
+        });
+    }
+
+    // 2. Obtener datos recientes
+    const historialReciente = await Medicion.find({ cultivo: configActiva.nombre })
                                             .sort({ fecha: -1 })
-                                            .limit(5);
+                                            .limit(3);
 
     let datosTexto = "No hay datos recientes.";
     if (historialReciente.length > 0) {
@@ -94,17 +104,24 @@ app.post('/api/asistente', async (req, res) => {
       ).join(" | ");
     }
 
+    // 3. Prompt con análisis de terreno
     const promptExperto = `
-      Eres un ingeniero agrónomo experto ayudando a un productor. 
-      El cultivo actual que se está monitoreando es: ${cultivo}. 
-      Los últimos datos reales de los sensores IoT son: ${datosTexto}.
+      Eres un ingeniero agrónomo experto ayudando a un productor en Honduras. 
       
-      El productor te pregunta: "${pregunta}".
+      CONTEXTO DEL CULTIVO:
+      * Cultivo: ${configActiva.nombre} (Etapa: ${configActiva.etapa})
+      * Terreno: ${configActiva.tamanoTerreno} Manzanas (Aprox. ${configActiva.tamanoTerreno * 7000} m2).
+      * Sistema de Riego: ${configActiva.sistemaRiego}.
       
-      Reglas de tu respuesta:
-      - Sé directo, profesional y muy conciso (máximo 3 líneas).
-      - Basa tu consejo estrictamente en los datos de los sensores proporcionados.
-      - No uses formatos complejos como negritas o listas largas.
+      DATOS RECIENTES SENSORES: [ ${datosTexto} ]
+      
+      PREGUNTA DEL PRODUCTOR: "${pregunta}"
+      
+      REGLAS DE TU RESPUESTA:
+      1. Sé directo, técnico pero amigable (máximo 4 líneas).
+      2. Evalúa matemáticamente si el Caudal medido es suficiente para cubrir la demanda hídrica de las ${configActiva.tamanoTerreno} manzanas por ${configActiva.sistemaRiego}.
+      3. Da una recomendación hidráulica clara si el caudal no cuadra con el tamaño del terreno.
+      4. No uses palabras complicadas, formatos de negritas, ni símbolos raros. Escribe como un mensaje de texto normal.
     `;
 
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
@@ -114,7 +131,7 @@ app.post('/api/asistente', async (req, res) => {
 
   } catch (error) {
     console.error("❌ Error con la IA:", error);
-    res.status(500).json({ error: "El asistente está descansando, intenta en un momento." });
+    res.status(500).json({ error: "El asistente está calculando, intenta en un momento." });
   }
 });
 
