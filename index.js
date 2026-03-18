@@ -4,19 +4,21 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
-// --- 1. IMPORTAR IA DE GOOGLE ---
+// --- IMPORTAR IA DE GOOGLE ---
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1. Conexión a MongoDB Atlas
+// --- 1. CONEXIÓN A MONGODB ATLAS ---
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅ Conectado a MongoDB Atlas"))
   .catch(err => console.error("❌ Error Mongo:", err));
 
-// --- MODELOS ---
+// --- 2. MODELOS DE BASE DE DATOS ---
+
+// Modelo para guardar las lecturas de los sensores + las recomendaciones
 const MedicionSchema = new mongoose.Schema({
   cultivo: String,
   etapa: String,
@@ -24,27 +26,37 @@ const MedicionSchema = new mongoose.Schema({
   caudal: Number,
   temperatura: Number,
   alerta: String,
+  recomendaciones: [String], // Aquí se guardan los consejos de la matriz
   fecha: { type: Date, default: Date.now }
 });
 const Medicion = mongoose.model('Medicion', MedicionSchema);
 
+// Modelo para guardar la configuración elegida en la App
 const CultivoConfigSchema = new mongoose.Schema({
   nombre: String,
   etapa: String,
   horario: String,
-  tiempoRiego: String,   
-  sistemaRiego: String,  
-  tamanoTerreno: Number,
+  tiempoRiego: String,   // Guardado como texto ("15-25")
+  sistemaRiego: String,  // Ej: "goteo"
+  tamanoTerreno: Number, // Ej: 1.5 (Manzanas)
   fecha: { type: Date, default: Date.now }
 });
 const CultivoConfig = mongoose.model('CultivoConfig', CultivoConfigSchema);
 
-// --- INICIALIZAR LA IA ---
-// Asegúrate de tener GEMINI_API_KEY en tu archivo .env
+// Modelo para leer la Matriz de la Tesis (El JSON que subiste)
+const RecomendacionSchema = new mongoose.Schema({
+  cultivo: String,
+  etapa: String,
+  parametros: Object 
+});
+const Recomendacion = mongoose.model('Recomendacion', RecomendacionSchema);
+
+// --- 3. INICIALIZAR LA IA ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- RUTAS API ---
+// --- 4. RUTAS API ---
 
+// Enviar historial a la App
 app.get('/api/historial', async (req, res) => {
   try {
     const historial = await Medicion.find().sort({ fecha: -1 }).limit(20);
@@ -54,6 +66,7 @@ app.get('/api/historial', async (req, res) => {
   }
 });
 
+// Recibir configuración desde la App
 app.post('/api/cultivo', async (req, res) => {
   try {
     const nuevoCultivo = new CultivoConfig(req.body);
@@ -65,17 +78,15 @@ app.post('/api/cultivo', async (req, res) => {
   }
 });
 
-// --- RUTA NUEVA: ASISTENTE IA ---
+// Chat Inteligente (Asistente Agrónomo)
 app.post('/api/asistente', async (req, res) => {
   try {
     const { pregunta, cultivo } = req.body;
 
-    // Buscamos las últimas 5 mediciones EXACTAS de ese cultivo usando tu modelo Medicion
     const historialReciente = await Medicion.find({ cultivo: cultivo })
                                             .sort({ fecha: -1 })
                                             .limit(5);
 
-    // Preparamos los datos para que la IA los lea
     let datosTexto = "No hay datos recientes.";
     if (historialReciente.length > 0) {
       datosTexto = historialReciente.map(m => 
@@ -83,7 +94,6 @@ app.post('/api/asistente', async (req, res) => {
       ).join(" | ");
     }
 
-    // Le damos personalidad y contexto al modelo
     const promptExperto = `
       Eres un ingeniero agrónomo experto ayudando a un productor. 
       El cultivo actual que se está monitoreando es: ${cultivo}. 
@@ -97,11 +107,9 @@ app.post('/api/asistente', async (req, res) => {
       - No uses formatos complejos como negritas o listas largas.
     `;
 
-    // Llamamos a Gemini
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const result = await model.generateContent(promptExperto);
     
-    // Devolvemos el texto a la aplicación móvil
     res.status(200).json({ respuesta: result.response.text() });
 
   } catch (error) {
@@ -113,7 +121,7 @@ app.post('/api/asistente', async (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor API corriendo en puerto ${PORT}`));
 
-// --- LÓGICA MQTT (SENSORES) ---
+// --- 5. LÓGICA MQTT (CEREBRO EVALUADOR) ---
 
 const client = mqtt.connect(process.env.MQTT_URL, {
   username: process.env.MQTT_USER,
@@ -130,19 +138,55 @@ client.on('message', async (topic, message) => {
     const data = JSON.parse(message.toString());
     
     const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
+    let consejosMatriz = []; 
     
     if (configActiva) {
       data.cultivo = configActiva.nombre;
       data.etapa = configActiva.etapa;
       
-      if (data.cultivo === 'Tomate' && (data.ph < 6.0 || data.ph > 7.5)) {
-        data.alerta = "pH fuera de rango óptimo";
+      // Consultamos tu base de datos (El JSON importado)
+      const matriz = await Recomendacion.findOne({ cultivo: data.cultivo, etapa: data.etapa });
+
+      if (matriz && matriz.parametros) {
+        const p = matriz.parametros;
+
+        // Evaluación de pH
+        if (data.ph < p.ph.min) {
+          consejosMatriz.push(`Profesional: ${p.ph.bajo_prof}`);
+          consejosMatriz.push(`Empírica: ${p.ph.bajo_emp}`);
+        } else if (data.ph > p.ph.max) {
+          consejosMatriz.push(`Profesional: ${p.ph.alto_prof}`);
+          consejosMatriz.push(`Empírica: ${p.ph.alto_emp}`);
+        }
+
+        // Evaluación de Temperatura
+        if (data.temperatura < p.temperatura.min) {
+          consejosMatriz.push(`Profesional: ${p.temperatura.bajo_prof}`);
+          consejosMatriz.push(`Empírica: ${p.temperatura.bajo_emp}`);
+        } else if (data.temperatura > p.temperatura.max) {
+          consejosMatriz.push(`Profesional: ${p.temperatura.alto_prof}`);
+          consejosMatriz.push(`Empírica: ${p.temperatura.alto_emp}`);
+        }
+
+        // Evaluación de Caudal
+        if (data.caudal < p.caudal.min) {
+          consejosMatriz.push(`Profesional: ${p.caudal.bajo_prof}`);
+          consejosMatriz.push(`Empírica: ${p.caudal.bajo_emp}`);
+        } else if (data.caudal > p.caudal.max) {
+          consejosMatriz.push(`Profesional: ${p.caudal.alto_prof}`);
+          consejosMatriz.push(`Empírica: ${p.caudal.alto_emp}`);
+        }
       }
     }
 
-    const nuevaMedicion = new Medicion(data);
+    // Guardar los datos junto con las recomendaciones generadas
+    const nuevaMedicion = new Medicion({ 
+      ...data, 
+      recomendaciones: consejosMatriz 
+    });
+    
     await nuevaMedicion.save();
-    console.log("💾 Datos de sensores guardados con validación");
+    console.log(`💾 Sensor guardado. Recomendaciones insertadas: ${consejosMatriz.length}`);
   } catch (err) {
     console.error("❌ Error al procesar mensaje MQTT:", err);
   }
