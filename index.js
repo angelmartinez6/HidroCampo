@@ -78,6 +78,16 @@ app.post('/api/cultivo', async (req, res) => {
   }
 });
 
+// --- NUEVA RUTA: Obtener la configuración activa para mostrar en la App ---
+app.get('/api/cultivo/activo', async (req, res) => {
+  try {
+    const config = await CultivoConfig.findOne().sort({ fecha: -1 });
+    res.json(config || {});
+  } catch (err) {
+    res.status(500).json({ error: "Error al obtener la configuración" });
+  }
+});
+
 // Chat Inteligente (Asistente Agrónomo Híbrido)
 app.post('/api/asistente', async (req, res) => {
   try {
