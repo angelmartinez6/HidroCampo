@@ -17,8 +17,6 @@ mongoose.connect(process.env.MONGO_URI)
   .catch(err => console.error("❌ Error Mongo:", err));
 
 // --- 2. MODELOS DE BASE DE DATOS ---
-
-// Modelo para guardar las lecturas de los sensores + las recomendaciones
 const MedicionSchema = new mongoose.Schema({
   cultivo: String,
   etapa: String,
@@ -26,24 +24,22 @@ const MedicionSchema = new mongoose.Schema({
   caudal: Number,
   temperatura: Number,
   alerta: String,
-  recomendaciones: [String], // Aquí se guardan los consejos de la matriz
+  recomendaciones: [String], 
   fecha: { type: Date, default: Date.now }
 });
 const Medicion = mongoose.model('Medicion', MedicionSchema);
 
-// Modelo para guardar la configuración elegida en la App
 const CultivoConfigSchema = new mongoose.Schema({
   nombre: String,
   etapa: String,
   horario: String,
-  tiempoRiego: String,   // Guardado como texto ("15-25")
-  sistemaRiego: String,  // Ej: "goteo"
-  tamanoTerreno: Number, // Ej: 1.5 (Manzanas)
+  tiempoRiego: String, 
+  sistemaRiego: String, 
+  tamanoTerreno: Number, 
   fecha: { type: Date, default: Date.now }
 });
 const CultivoConfig = mongoose.model('CultivoConfig', CultivoConfigSchema);
 
-// Modelo para leer la Matriz de la Tesis (El JSON que subiste)
 const RecomendacionSchema = new mongoose.Schema({
   cultivo: String,
   etapa: String,
@@ -54,37 +50,38 @@ const Recomendacion = mongoose.model('Recomendacion', RecomendacionSchema);
 // --- 3. INICIALIZAR LA IA ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- 4. RUTAS API ---
+// --- 4. RUTAS API ACTUALIZADAS PARA MULTI-CULTIVO ---
 
-// Enviar historial a la App
+// Enviar historial a la App (Aumentamos a 100 para que puedas ver el de cultivos anteriores)
 app.get('/api/historial', async (req, res) => {
   try {
-    const historial = await Medicion.find().sort({ fecha: -1 }).limit(20);
+    const historial = await Medicion.find().sort({ fecha: -1 }).limit(100);
     res.json(historial);
   } catch (err) {
     res.status(500).json({ error: "Error al obtener datos" });
   }
 });
 
-// Recibir configuración desde la App
-app.post('/api/cultivo', async (req, res) => {
+// Guardar un NUEVO cultivo en la lista (Sin borrar los demás)
+app.post('/api/cultivos', async (req, res) => {
   try {
     const nuevoCultivo = new CultivoConfig(req.body);
     await nuevoCultivo.save();
-    console.log("📍 Nuevo cultivo configurado:", req.body.nombre);
-    res.status(201).json({ message: "Configuración actualizada en el servidor" });
+    console.log("📍 Nuevo cultivo agregado a la lista:", req.body.nombre);
+    // IMPORTANTE: Devolvemos el objeto completo para que la app guarde el _id
+    res.status(201).json(nuevoCultivo); 
   } catch (err) {
     res.status(500).json({ error: "Error al guardar configuración" });
   }
 });
 
-// --- NUEVA RUTA: Obtener la configuración activa para mostrar en la App ---
-app.get('/api/cultivo/activo', async (req, res) => {
+// Obtener TODOS los cultivos para mostrar los "Chips" (botones) en la App
+app.get('/api/cultivos', async (req, res) => {
   try {
-    const config = await CultivoConfig.findOne().sort({ fecha: -1 });
-    res.json(config || {});
+    const cultivos = await CultivoConfig.find().sort({ fecha: -1 });
+    res.json(cultivos || []);
   } catch (err) {
-    res.status(500).json({ error: "Error al obtener la configuración" });
+    res.status(500).json({ error: "Error al obtener la lista de cultivos" });
   }
 });
 
@@ -92,8 +89,6 @@ app.get('/api/cultivo/activo', async (req, res) => {
 app.post('/api/asistente', async (req, res) => {
   try {
     const { pregunta } = req.body;
-
-    // 1. Obtener la configuración activa para saber las manzanas y sistema de riego
     const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
 
     if (!configActiva) {
@@ -102,7 +97,6 @@ app.post('/api/asistente', async (req, res) => {
         });
     }
 
-    // 2. Obtener datos recientes
     const historialReciente = await Medicion.find({ cultivo: configActiva.nombre })
                                             .sort({ fecha: -1 })
                                             .limit(3);
@@ -114,7 +108,6 @@ app.post('/api/asistente', async (req, res) => {
       ).join(" | ");
     }
 
-    // 3. Prompt con análisis de terreno
     const promptExperto = `
       Eres un ingeniero agrónomo experto ayudando a un productor en Honduras. 
       
@@ -149,7 +142,6 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor API corriendo en puerto ${PORT}`));
 
 // --- 5. LÓGICA MQTT (CEREBRO EVALUADOR) ---
-
 const client = mqtt.connect(process.env.MQTT_URL, {
   username: process.env.MQTT_USER,
   password: process.env.MQTT_PASS
@@ -164,6 +156,7 @@ client.on('message', async (topic, message) => {
   try {
     const data = JSON.parse(message.toString());
     
+    // NOTA PARA TU TESIS: El ESP32 siempre registrará datos para el último cultivo que hayas agregado en la App.
     const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
     let consejosMatriz = []; 
     
@@ -171,13 +164,11 @@ client.on('message', async (topic, message) => {
       data.cultivo = configActiva.nombre;
       data.etapa = configActiva.etapa;
       
-      // Consultamos tu base de datos (El JSON importado)
       const matriz = await Recomendacion.findOne({ cultivo: data.cultivo, etapa: data.etapa });
 
       if (matriz && matriz.parametros) {
         const p = matriz.parametros;
 
-        // Evaluación de pH
         if (data.ph < p.ph.min) {
           consejosMatriz.push(`Profesional: ${p.ph.bajo_prof}`);
           consejosMatriz.push(`Empírica: ${p.ph.bajo_emp}`);
@@ -186,7 +177,6 @@ client.on('message', async (topic, message) => {
           consejosMatriz.push(`Empírica: ${p.ph.alto_emp}`);
         }
 
-        // Evaluación de Temperatura
         if (data.temperatura < p.temperatura.min) {
           consejosMatriz.push(`Profesional: ${p.temperatura.bajo_prof}`);
           consejosMatriz.push(`Empírica: ${p.temperatura.bajo_emp}`);
@@ -195,7 +185,6 @@ client.on('message', async (topic, message) => {
           consejosMatriz.push(`Empírica: ${p.temperatura.alto_emp}`);
         }
 
-        // Evaluación de Caudal
         if (data.caudal < p.caudal.min) {
           consejosMatriz.push(`Profesional: ${p.caudal.bajo_prof}`);
           consejosMatriz.push(`Empírica: ${p.caudal.bajo_emp}`);
@@ -206,14 +195,13 @@ client.on('message', async (topic, message) => {
       }
     }
 
-    // Guardar los datos junto con las recomendaciones generadas
     const nuevaMedicion = new Medicion({ 
       ...data, 
       recomendaciones: consejosMatriz 
     });
     
     await nuevaMedicion.save();
-    console.log(`💾 Sensor guardado. Recomendaciones insertadas: ${consejosMatriz.length}`);
+    console.log(`💾 Sensor guardado para ${data.cultivo}. Recomendaciones insertadas: ${consejosMatriz.length}`);
   } catch (err) {
     console.error("❌ Error al procesar mensaje MQTT:", err);
   }
