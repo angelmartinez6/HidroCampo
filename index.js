@@ -97,11 +97,18 @@ app.delete('/api/cultivos/:id', async (req, res) => {
 // Chat Inteligente IA
 app.post('/api/asistente', async (req, res) => {
   try {
+    console.log("💬 Solicitud de IA recibida:", req.body.pregunta);
+
+    if (!process.env.GEMINI_API_KEY) {
+      console.error("❌ ERROR: GEMINI_API_KEY no encontrada en Railway.");
+      return res.status(200).json({ respuesta: "Error técnico: API Key faltante." });
+    }
+
     const { pregunta } = req.body;
     const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
 
     if (!configActiva) {
-        return res.status(200).json({ respuesta: "Por favor, configura un cultivo primero." });
+        return res.status(200).json({ respuesta: "Por favor, configura un cultivo primero en la pantalla principal." });
     }
 
     const historialReciente = await Medicion.find({ cultivo: configActiva.nombre }).sort({ fecha: -1 }).limit(3);
@@ -119,13 +126,15 @@ app.post('/api/asistente', async (req, res) => {
       REGLAS: Sé directo (máximo 4 líneas). Evalúa si el caudal es suficiente. No uses formatos raros ni negritas.
     `;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    // SOLUCIÓN AL ERROR 404: Cambiado a "gemini-pro"
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
     const result = await model.generateContent(promptExperto);
     
+    console.log("✅ IA respondió exitosamente.");
     res.status(200).json({ respuesta: result.response.text() });
   } catch (error) {
-    console.error("❌ Error con la IA:", error);
-    res.status(500).json({ error: "Error de IA. Asegúrate de tener la variable GEMINI_API_KEY en Railway." });
+    console.error("❌ Error interno con la IA:", error.message || error);
+    res.status(500).json({ error: "Error de IA. Revisa la terminal de Railway." });
   }
 });
 
