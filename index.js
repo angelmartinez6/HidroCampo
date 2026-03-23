@@ -79,7 +79,16 @@ app.get("/api/cultivos", async (req, res) => {
   }
 });
 
-// Eliminar cultivo y su historial de mediciones
+// NUEVA RUTA: Activar un cultivo para que reciba los datos del ESP32
+app.put("/api/cultivos/:id/activar", async (req, res) => {
+  try {
+    await CultivoConfig.findByIdAndUpdate(req.params.id, { fecha: Date.now() });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Error al activar cultivo" });
+  }
+});
+
 app.delete("/api/cultivos/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -128,7 +137,7 @@ app.post("/api/asistente", async (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Servidor en puerto ${PORT}`));
 
-// --- 5. LÓGICA MQTT CON ETIQUETAS DE NIVEL Y MULTIPLICADORES ---
+// --- 5. LÓGICA MQTT CON MULTIPLICADORES ---
 const client = mqtt.connect(process.env.MQTT_URL, {
   username: process.env.MQTT_USER,
   password: process.env.MQTT_PASS,
@@ -181,8 +190,7 @@ client.on("message", async (topic, message) => {
         }
 
         // --- MAGIA: Multiplicadores de Caudal ---
-        // 1. Aumento de flujo según el sistema de riego seleccionado
-        let multiplicadorRiego = 1.0; // Goteo (Base)
+        let multiplicadorRiego = 1.0;
         if (configActiva.sistemaRiego === "microaspersion")
           multiplicadorRiego = 1.5;
         else if (configActiva.sistemaRiego === "aspersion")
@@ -190,12 +198,10 @@ client.on("message", async (topic, message) => {
         else if (configActiva.sistemaRiego === "gravedad")
           multiplicadorRiego = 5.0;
 
-        // 2. Cálculo del rango ideal (Base de 1 Mz x Cantidad de Manzanas x Tipo de Riego)
         const manzanas = configActiva.tamanoTerreno || 1;
         const caudalMinEsperado = p.caudal.min * manzanas * multiplicadorRiego;
         const caudalMaxEsperado = p.caudal.max * manzanas * multiplicadorRiego;
 
-        // --- Caudal Ajustado ---
         if (data.caudal < caudalMinEsperado) {
           consejosMatriz.push(
             `[CAUDAL_BAJO] Profesional: ${p.caudal.bajo_prof}`,
