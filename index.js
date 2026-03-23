@@ -4,7 +4,8 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+// ⚠️ PEGA AQUÍ TU CLAVE DE GROQ
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 const app = express();
 app.use(cors());
@@ -47,7 +48,28 @@ const RecomendacionSchema = new mongoose.Schema({
 });
 const Recomendacion = mongoose.model("Recomendacion", RecomendacionSchema);
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// --- 3. FUNCIÓN MAESTRA PARA GROQ ---
+async function consultarGroq(prompt) {
+  const response = await fetch(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-70b-versatile", // Modelo ultra rápido y avanzado
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.5,
+      }),
+    },
+  );
+
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.choices[0].message.content;
+}
 
 // --- 4. RUTAS API ---
 
@@ -127,9 +149,8 @@ app.post("/api/asistente", async (req, res) => {
 
     let promptExperto = `Eres agrónomo experto. Contexto: ${configActiva.nombre} (${configActiva.etapa}), ${configActiva.tamanoTerreno}Mz, Riego ${configActiva.sistemaRiego}. Datos actuales: [${datosTexto}]. Pregunta: "${pregunta}". Responde directo en máximo 4 líneas.`;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const result = await model.generateContent(promptExperto);
-    res.status(200).json({ respuesta: result.response.text() });
+    const respuesta = await consultarGroq(promptExperto);
+    res.status(200).json({ respuesta: respuesta });
   } catch (error) {
     res.status(500).json({ error: "Error en el asistente." });
   }
@@ -139,9 +160,8 @@ app.post("/api/asistente", async (req, res) => {
 app.post("/api/reporte-ia", async (req, res) => {
   try {
     const { prompt } = req.body;
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const result = await model.generateContent(prompt);
-    res.status(200).json({ respuesta: result.response.text() });
+    const respuesta = await consultarGroq(prompt);
+    res.status(200).json({ respuesta: respuesta });
   } catch (error) {
     console.error("Error en reporte IA:", error);
     res.status(500).json({ error: "Error generando reporte IA" });
@@ -177,7 +197,6 @@ client.on("message", async (topic, message) => {
       if (matriz && matriz.parametros) {
         const p = matriz.parametros;
 
-        // pH
         if (data.ph < p.ph.min) {
           consejosMatriz.push(`[PH_BAJO] Profesional: ${p.ph.bajo_prof}`);
           consejosMatriz.push(`[PH_BAJO] Empírica: ${p.ph.bajo_emp}`);
@@ -186,7 +205,6 @@ client.on("message", async (topic, message) => {
           consejosMatriz.push(`[PH_ALTO] Empírica: ${p.ph.alto_emp}`);
         }
 
-        // Temperatura
         if (data.temperatura < p.temperatura.min) {
           consejosMatriz.push(
             `[TEMP_BAJO] Profesional: ${p.temperatura.bajo_prof}`,
@@ -203,7 +221,6 @@ client.on("message", async (topic, message) => {
           );
         }
 
-        // Caudal (con Multiplicador)
         let multiplicadorRiego = 1.0;
         if (configActiva.sistemaRiego === "microaspersion")
           multiplicadorRiego = 1.5;
