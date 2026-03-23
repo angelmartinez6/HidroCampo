@@ -128,7 +128,7 @@ app.post("/api/asistente", async (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Servidor en puerto ${PORT}`));
 
-// --- 5. LÓGICA MQTT CON ETIQUETAS DE NIVEL ---
+// --- 5. LÓGICA MQTT CON ETIQUETAS DE NIVEL Y MULTIPLICADORES ---
 const client = mqtt.connect(process.env.MQTT_URL, {
   username: process.env.MQTT_USER,
   password: process.env.MQTT_PASS,
@@ -154,7 +154,7 @@ client.on("message", async (topic, message) => {
       if (matriz && matriz.parametros) {
         const p = matriz.parametros;
 
-        // pH
+        // --- pH ---
         if (data.ph < p.ph.min) {
           consejosMatriz.push(`[PH_BAJO] Profesional: ${p.ph.bajo_prof}`);
           consejosMatriz.push(`[PH_BAJO] Empírica: ${p.ph.bajo_emp}`);
@@ -163,7 +163,7 @@ client.on("message", async (topic, message) => {
           consejosMatriz.push(`[PH_ALTO] Empírica: ${p.ph.alto_emp}`);
         }
 
-        // Temperatura
+        // --- Temperatura ---
         if (data.temperatura < p.temperatura.min) {
           consejosMatriz.push(
             `[TEMP_BAJO] Profesional: ${p.temperatura.bajo_prof}`,
@@ -180,13 +180,28 @@ client.on("message", async (topic, message) => {
           );
         }
 
-        // Caudal
-        if (data.caudal < p.caudal.min) {
+        // --- MAGIA: Multiplicadores de Caudal ---
+        // 1. Aumento de flujo según el sistema de riego seleccionado
+        let multiplicadorRiego = 1.0; // Goteo (Base)
+        if (configActiva.sistemaRiego === "microaspersion")
+          multiplicadorRiego = 1.5;
+        else if (configActiva.sistemaRiego === "aspersion")
+          multiplicadorRiego = 3.0;
+        else if (configActiva.sistemaRiego === "gravedad")
+          multiplicadorRiego = 5.0;
+
+        // 2. Cálculo del rango ideal (Base de 1 Mz x Cantidad de Manzanas x Tipo de Riego)
+        const manzanas = configActiva.tamanoTerreno || 1;
+        const caudalMinEsperado = p.caudal.min * manzanas * multiplicadorRiego;
+        const caudalMaxEsperado = p.caudal.max * manzanas * multiplicadorRiego;
+
+        // --- Caudal Ajustado ---
+        if (data.caudal < caudalMinEsperado) {
           consejosMatriz.push(
             `[CAUDAL_BAJO] Profesional: ${p.caudal.bajo_prof}`,
           );
           consejosMatriz.push(`[CAUDAL_BAJO] Empírica: ${p.caudal.bajo_emp}`);
-        } else if (data.caudal > p.caudal.max) {
+        } else if (data.caudal > caudalMaxEsperado) {
           consejosMatriz.push(
             `[CAUDAL_ALTO] Profesional: ${p.caudal.alto_prof}`,
           );
