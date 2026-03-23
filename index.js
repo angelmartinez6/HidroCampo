@@ -101,42 +101,50 @@ app.delete("/api/cultivos/:id", async (req, res) => {
   }
 });
 
+// --- RUTA EXCLUSIVA PARA EL CHAT DEL ASISTENTE ---
 app.post("/api/asistente", async (req, res) => {
   try {
-    const { pregunta, tipo } = req.body;
+    const { pregunta } = req.body;
     const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
     if (!configActiva)
       return res
         .status(200)
         .json({ respuesta: "Configura un cultivo primero." });
 
-    let promptExperto = "";
+    const historial = await Medicion.find({ cultivo: configActiva.nombre })
+      .sort({ fecha: -1 })
+      .limit(3);
 
-    if (tipo === "reporte") {
-      // Petición desde el PDF (respuestas largas y detalladas)
-      promptExperto = pregunta;
-    } else {
-      // Petición desde el Chat (respuestas cortas)
-      const historial = await Medicion.find({ cultivo: configActiva.nombre })
-        .sort({ fecha: -1 })
-        .limit(3);
-      let datosTexto =
-        historial.length > 0
-          ? historial
-              .map(
-                (m) =>
-                  `pH: ${m.ph}, Temp: ${m.temperatura}°C, Caudal: ${m.caudal}L/min`,
-              )
-              .join(" | ")
-          : "Sin datos.";
-      promptExperto = `Eres agrónomo experto. Contexto: ${configActiva.nombre} (${configActiva.etapa}), ${configActiva.tamanoTerreno}Mz, Riego ${configActiva.sistemaRiego}. Datos actuales: [${datosTexto}]. Pregunta: "${pregunta}". Responde directo en máximo 4 líneas.`;
-    }
+    let datosTexto =
+      historial.length > 0
+        ? historial
+            .map(
+              (m) =>
+                `pH: ${m.ph}, Temp: ${m.temperatura}°C, Caudal: ${m.caudal}L/min`,
+            )
+            .join(" | ")
+        : "Sin datos.";
+
+    let promptExperto = `Eres agrónomo experto. Contexto: ${configActiva.nombre} (${configActiva.etapa}), ${configActiva.tamanoTerreno}Mz, Riego ${configActiva.sistemaRiego}. Datos actuales: [${datosTexto}]. Pregunta: "${pregunta}". Responde directo en máximo 4 líneas.`;
 
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const result = await model.generateContent(promptExperto);
     res.status(200).json({ respuesta: result.response.text() });
   } catch (error) {
     res.status(500).json({ error: "Error en el asistente." });
+  }
+});
+
+// --- RUTA EXCLUSIVA PARA GENERAR EL REPORTE PDF LARGO ---
+app.post("/api/reporte-ia", async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const result = await model.generateContent(prompt);
+    res.status(200).json({ respuesta: result.response.text() });
+  } catch (error) {
+    console.error("Error en reporte IA:", error);
+    res.status(500).json({ error: "Error generando reporte IA" });
   }
 });
 
