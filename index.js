@@ -79,7 +79,6 @@ app.get("/api/cultivos", async (req, res) => {
   }
 });
 
-// NUEVA RUTA: Activar un cultivo para que reciba los datos del ESP32
 app.put("/api/cultivos/:id/activar", async (req, res) => {
   try {
     await CultivoConfig.findByIdAndUpdate(req.params.id, { fecha: Date.now() });
@@ -104,29 +103,36 @@ app.delete("/api/cultivos/:id", async (req, res) => {
 
 app.post("/api/asistente", async (req, res) => {
   try {
-    const { pregunta } = req.body;
+    const { pregunta, tipo } = req.body;
     const configActiva = await CultivoConfig.findOne().sort({ fecha: -1 });
     if (!configActiva)
       return res
         .status(200)
         .json({ respuesta: "Configura un cultivo primero." });
 
-    const historial = await Medicion.find({ cultivo: configActiva.nombre })
-      .sort({ fecha: -1 })
-      .limit(3);
-    let datosTexto =
-      historial.length > 0
-        ? historial
-            .map(
-              (m) =>
-                `pH: ${m.ph}, Temp: ${m.temperatura}°C, Caudal: ${m.caudal}L/min`,
-            )
-            .join(" | ")
-        : "Sin datos.";
+    let promptExperto = "";
 
-    const promptExperto = `Eres agrónomo experto. Contexto: ${configActiva.nombre} (${configActiva.etapa}), ${configActiva.tamanoTerreno}Mz, Riego ${configActiva.sistemaRiego}. Datos actuales: [${datosTexto}]. Pregunta: "${pregunta}". Responde directo en máximo 4 líneas.`;
+    if (tipo === "reporte") {
+      // Petición desde el PDF (respuestas largas y detalladas)
+      promptExperto = pregunta;
+    } else {
+      // Petición desde el Chat (respuestas cortas)
+      const historial = await Medicion.find({ cultivo: configActiva.nombre })
+        .sort({ fecha: -1 })
+        .limit(3);
+      let datosTexto =
+        historial.length > 0
+          ? historial
+              .map(
+                (m) =>
+                  `pH: ${m.ph}, Temp: ${m.temperatura}°C, Caudal: ${m.caudal}L/min`,
+              )
+              .join(" | ")
+          : "Sin datos.";
+      promptExperto = `Eres agrónomo experto. Contexto: ${configActiva.nombre} (${configActiva.etapa}), ${configActiva.tamanoTerreno}Mz, Riego ${configActiva.sistemaRiego}. Datos actuales: [${datosTexto}]. Pregunta: "${pregunta}". Responde directo en máximo 4 líneas.`;
+    }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const result = await model.generateContent(promptExperto);
     res.status(200).json({ respuesta: result.response.text() });
   } catch (error) {
@@ -137,7 +143,7 @@ app.post("/api/asistente", async (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Servidor en puerto ${PORT}`));
 
-// --- 5. LÓGICA MQTT CON MULTIPLICADORES ---
+// --- 5. LÓGICA MQTT ---
 const client = mqtt.connect(process.env.MQTT_URL, {
   username: process.env.MQTT_USER,
   password: process.env.MQTT_PASS,
@@ -163,7 +169,7 @@ client.on("message", async (topic, message) => {
       if (matriz && matriz.parametros) {
         const p = matriz.parametros;
 
-        // --- pH ---
+        // pH
         if (data.ph < p.ph.min) {
           consejosMatriz.push(`[PH_BAJO] Profesional: ${p.ph.bajo_prof}`);
           consejosMatriz.push(`[PH_BAJO] Empírica: ${p.ph.bajo_emp}`);
@@ -172,7 +178,7 @@ client.on("message", async (topic, message) => {
           consejosMatriz.push(`[PH_ALTO] Empírica: ${p.ph.alto_emp}`);
         }
 
-        // --- Temperatura ---
+        // Temperatura
         if (data.temperatura < p.temperatura.min) {
           consejosMatriz.push(
             `[TEMP_BAJO] Profesional: ${p.temperatura.bajo_prof}`,
@@ -189,7 +195,7 @@ client.on("message", async (topic, message) => {
           );
         }
 
-        // --- MAGIA: Multiplicadores de Caudal ---
+        // Caudal (con Multiplicador)
         let multiplicadorRiego = 1.0;
         if (configActiva.sistemaRiego === "microaspersion")
           multiplicadorRiego = 1.5;
